@@ -2,11 +2,11 @@ import os
 from fastapi import FastAPI, Request, Response, HTTPException
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
-from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain.agents import create_react_agent, AgentExecutor
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.memory import ConversationBufferMemory
+
 
 load_dotenv()
 app=FastAPI()
@@ -32,12 +32,14 @@ async def read_root(request: Request):
     try:
         data = await request.json()
         query = data.get("query")
+        messages = data.get("messages", [])
         model = AzureChatOpenAI(model="gpt-4o", api_key=os.getenv("OPEN_AI_KEY"), api_version=os.getenv("OPENAI_API_VERSION"))
-        memory = MemorySaver()
-        app = create_react_agent(model, tools=[], checkpointer=memory)
-
-        # Define the system message content directly
-        system_content = """
+        memory = ConversationBufferMemory(
+                    memory_key="chat_history",
+                    return_messages=True
+                )  
+              # Define the system message content directly
+        system_message = """
             You are an expert resume builder assistant. Your role is to:
             1. Systematically collect all required information from the user through a series of questions
             2. Ensure you gather complete details for each section:
@@ -52,41 +54,71 @@ async def read_root(request: Request):
             5. Guide the user through any missing or incomplete information
             
             Required Information Structure:
-            {
-                "personal_info": {
+            {{
+                "personal_info": {{
                     "name": "string",
                     "email": "string",
                     "phone": "string",
                     "location": "string"
-                },
+                }},
                 "summary": "string",
-                "experience": [{
+                "experience": [{{
                     "company": "string",
                     "title": "string",
                     "start_date": "string",
                     "end_date": "string",
                     "responsibilities": "string"
-                }],
-                "education": [{
+                }}],
+                "education": [{{
                     "institution": "string",
                     "degree": "string",
                     "graduation_date": "string"
-                }],
-                "skills": ["string"],
-            }
+                }}],
+                "skills": ["string"]
+            }}
             
             Always maintain a professional tone and ensure all required information is collected before formatting the JSON.
         """
         
-        # Create messages list with proper message objects
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": query}
-        ]
-
-        final_state = app.invoke({"messages": messages}, config={"configurable": {"thread_id": 42}})
-
-        return Response(content=final_state["messages"][-1].content)
-
+      # Create the prompt template with all required variables
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_message),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+            ("human", "Think about this step-by-step:"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
+        
+        # Add the required tool names
+        tools = []
+        tool_names = [tool.name for tool in tools]
+        
+        # Create the agent with all required parameters
+        agent = create_react_agent(
+            llm=model,
+            tools=tools,
+            prompt=prompt
+        )
+        
+        # Create the agent executor
+        agent_executor = AgentExecutor.from_agent_and_tools(
+            agent=agent,
+            tools=tools,
+            memory=memory,
+            verbose=True,
+            handle_parsing_errors=True
+        )
+        
+        # Run the agent with the required input
+        response = agent_executor.invoke({
+            "input": query,
+            "tool_names": tool_names,
+            "tools": tools,
+            "agent_scratchpad": ""
+        })
+        
+        # Return the response
+        return Response(content=response["output"])
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
