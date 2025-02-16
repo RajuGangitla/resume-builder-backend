@@ -85,8 +85,6 @@ async def read_root(request: Request):
             ("system", system_message),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
-            ("human", "Think about this step-by-step:"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
         @tool
@@ -118,6 +116,7 @@ async def read_root(request: Request):
         # Run the agent with the required input
         response = agent_executor.invoke({
             "input": query,
+            "chat_history":messages
         })  
         
         # Return the response
