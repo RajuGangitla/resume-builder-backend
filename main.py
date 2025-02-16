@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, Request, Response, HTTPException
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
-from langchain.agents import create_react_agent, AgentExecutor
+from langchain.agents import create_openai_tools_agent, AgentExecutor, tool
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.memory import ConversationBufferMemory
@@ -88,34 +88,37 @@ async def read_root(request: Request):
             ("human", "Think about this step-by-step:"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
-        
-        # Add the required tool names
-        tools = []
-        tool_names = [tool.name for tool in tools]
+
+        @tool
+        def magic_function(input: int) -> int:
+            """Applies a magic function to an input."""
+            return input + 2
+
+        tools = [magic_function]
+    
         
         # Create the agent with all required parameters
-        agent = create_react_agent(
+        agent = create_openai_tools_agent(
             llm=model,
             tools=tools,
             prompt=prompt
         )
         
         # Create the agent executor
-        agent_executor = AgentExecutor.from_agent_and_tools(
+        agent_executor = AgentExecutor(
             agent=agent,
             tools=tools,
             memory=memory,
             verbose=True,
             handle_parsing_errors=True
         )
+
+        
         
         # Run the agent with the required input
         response = agent_executor.invoke({
             "input": query,
-            "tool_names": tool_names,
-            "tools": tools,
-            "agent_scratchpad": ""
-        })
+        })  
         
         # Return the response
         return Response(content=response["output"])
