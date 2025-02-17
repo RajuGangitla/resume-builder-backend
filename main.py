@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, Request, Response, HTTPException
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
-from langchain.agents import create_openai_tools_agent, AgentExecutor, tool
+from langchain.agents import create_openai_tools_agent,create_openai_functions_agent, AgentExecutor, tool
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.memory import ConversationBufferMemory
@@ -32,12 +32,8 @@ async def read_root(request: Request):
     try:
         data = await request.json()
         query = data.get("query")
-        messages = data.get("messages", [])
         model = AzureChatOpenAI(model="gpt-4o", api_key=os.getenv("OPEN_AI_KEY"), api_version=os.getenv("OPENAI_API_VERSION"))
-        memory = ConversationBufferMemory(
-                    memory_key="chat_history",
-                    return_messages=True
-                )  
+
               # Define the system message content directly
         system_message = """
             You are an expert resume builder assistant. Your role is to:
@@ -80,13 +76,21 @@ async def read_root(request: Request):
             Always maintain a professional tone and ensure all required information is collected before formatting the JSON.
         """
         
+        memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )  
+
       # Create the prompt template with all required variables
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_message),
-            MessagesPlaceholder(variable_name="chat_history"),
+            MessagesPlaceholder("chat_history", optional=True),
             ("human", "{input}"),
+            MessagesPlaceholder(variable_name='agent_scratchpad')
         ])
 
+        # print(memory.load_memory_variables({}))
+        
         @tool
         def magic_function(input: int) -> int:
             """Applies a magic function to an input."""
@@ -96,17 +100,16 @@ async def read_root(request: Request):
     
         
         # Create the agent with all required parameters
-        agent = create_openai_tools_agent(
+        agent = create_openai_functions_agent(
             llm=model,
             tools=tools,
-            prompt=prompt
+            prompt=prompt,
         )
         
         # Create the agent executor
         agent_executor = AgentExecutor(
             agent=agent,
             tools=tools,
-            memory=memory,
             verbose=True,
             handle_parsing_errors=True
         )
@@ -116,7 +119,6 @@ async def read_root(request: Request):
         # Run the agent with the required input
         response = agent_executor.invoke({
             "input": query,
-            "chat_history":messages
         })  
         
         # Return the response
