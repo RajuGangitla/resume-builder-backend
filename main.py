@@ -10,6 +10,9 @@ import json
 import os
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
+import tempfile
+import subprocess
+from pathlib import Path
 
 
 load_dotenv()
@@ -196,6 +199,8 @@ def json_to_latex_resume(json_data: dict) -> str:
     except Exception as e:
         return f"% Error generating LaTeX: {str(e)}"
 
+
+
 @app.post("/chat")
 async def read_root(request: Request):
     try:
@@ -214,7 +219,8 @@ async def read_root(request: Request):
         2. Create a structured JSON resume using the format_resume_json tool
         3. Convert the resume to LaTeX format using the convert_to_latex tool
         4. Optimize the content for ATS systems using the optimize_resume_for_ats tool
-        
+        5. Generate a PDF from the LaTeX content using the generate_pdf tool and save it locally
+
         Follow the provided JSON schema and ensure all information is complete before formatting.
         If any information is missing, ask the user for it before proceeding.
         
@@ -283,7 +289,102 @@ async def read_root(request: Request):
             """Optimize resume content for ATS systems"""
             return text
 
-        tools = [format_resume_json, convert_to_latex, optimize_resume_for_ats]
+        @tool
+        def generate_pdf(latex_content: str) -> str:
+            """Generate a PDF from LaTeX content and save it in the local directory"""
+            try:
+                # Create a complete standalone LaTeX document
+                full_latex_content = r"""
+        \documentclass{article}
+        \usepackage[left=0.4in,top=0.4in,right=0.4in,bottom=0.4in]{geometry}
+        \usepackage{hyperref}
+        \usepackage[utf8]{inputenc}
+        \usepackage[T1]{fontenc}
+
+        % Define commands for resume formatting
+        \newcommand{\name}[1]{{\huge\textbf{#1}}\\\vspace{0.5em}}
+        \newcommand{\address}[1]{\textbf{#1}\\}
+        \newcommand{\tab}[1]{\hspace{.2667\textwidth}\rlap{#1}}
+        \newcommand{\itab}[1]{\hspace{0em}\rlap{#1}}
+
+        % Define resume section environment
+        \newenvironment{rSection}[1]{
+            \vspace{0.5em}
+            \textbf{\Large{#1}}
+            \vspace{0.5em}
+            \hrule
+            \begin{list}{}{
+                \setlength{\leftmargin}{0em}
+            }
+            \item[]
+        }{
+            \end{list}
+            \vspace{0.5em}
+        }
+
+        \begin{document}
+        """ + latex_content + r"""
+        \end{document}
+        """
+                
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
+                    
+                    # Write LaTeX content to temporary file
+                    tex_file = temp_path / "resume.tex"
+                    with open(tex_file, "w", encoding='utf-8') as f:
+                        f.write(full_latex_content)
+                    
+                    # Try different possible pdflatex paths
+                    pdflatex_paths = [
+                        "pdflatex",
+                        r"C:\Program Files\MiKTeX\miktex\bin\x64\pdflatex.exe",
+                        r"C:\Program Files (x86)\MiKTeX\miktex\bin\x64\pdflatex.exe"
+                    ]
+                    
+                    pdflatex_exe = None
+                    for path in pdflatex_paths:
+                        try:
+                            subprocess.run([path, "--version"], capture_output=True)
+                            pdflatex_exe = path
+                            break
+                        except Exception:
+                            continue
+                    
+                    if not pdflatex_exe:
+                        return "Error: pdflatex not found. Please install MiKTeX and ensure it's in your system PATH"
+                    
+                    # Run pdflatex
+                    try:
+                        process = subprocess.run(
+                            [pdflatex_exe, "-interaction=nonstopmode", "resume.tex"],
+                            cwd=temp_dir,
+                            capture_output=True,
+                            text=True,
+                            encoding='utf-8'
+                        )
+                        
+                        # Create output directory if it doesn't exist
+                        output_dir = Path("generated_pdfs")
+                        output_dir.mkdir(exist_ok=True)
+                        
+                        # Copy the generated PDF to our output directory
+                        pdf_file = temp_path / "resume.pdf"
+                        if pdf_file.exists():
+                            output_path = output_dir / "resume.pdf"
+                            with open(pdf_file, "rb") as src, open(output_path, "wb") as dst:
+                                dst.write(src.read())
+                            return f"PDF generated successfully and saved to {output_path}"
+                        else:
+                            return f"PDF generation failed. LaTeX Error: {process.stderr}"
+                            
+                    except Exception as e:
+                        return f"Error running pdflatex: {str(e)}"
+                        
+            except Exception as e:
+                return f"Error generating PDF: {str(e)}"
+
+        tools = [format_resume_json, convert_to_latex, optimize_resume_for_ats, generate_pdf]
         
         agent = create_openai_functions_agent(
             llm=model,
