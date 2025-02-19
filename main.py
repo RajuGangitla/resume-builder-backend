@@ -1,14 +1,14 @@
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, Response, HTTPException
-from langchain.chat_models import AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools import tool
 from langchain.memory import ConversationBufferMemory
-from langchain.agents import create_openai_functions_agent, AgentExecutor
+from langchain.agents import create_openai_functions_agent, create_tool_calling_agent, AgentExecutor
 import json
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 import tempfile
 import subprocess
@@ -386,7 +386,7 @@ async def read_root(request: Request):
 
         tools = [format_resume_json, convert_to_latex, optimize_resume_for_ats, generate_pdf]
         
-        agent = create_openai_functions_agent(
+        agent = create_tool_calling_agent(
             llm=model,
             tools=tools,
             prompt=prompt,
