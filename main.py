@@ -5,6 +5,7 @@ from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools import tool
 from langchain.memory import ConversationBufferMemory
+from langchain_community.chat_message_histories import RedisChatMessageHistory
 from langchain.agents import create_openai_functions_agent, create_tool_calling_agent, AgentExecutor
 import json
 import os
@@ -22,6 +23,7 @@ os.environ["OPEN_AI_KEY"] = os.getenv("OPEN_AI_KEY")
 os.environ["OPENAI_API_VERSION"] = os.getenv("OPENAI_API_VERSION")
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
 os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT")
+os.environ["REDIS_URI"] = os.getenv("REDIS_URI")
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 
 # Enable Cors
@@ -206,7 +208,6 @@ async def read_root(request: Request):
     try:
         data = await request.json()
         query = data.get("query")
-        messages = data.get("messages")
         model = AzureChatOpenAI(
             model="gpt-4",
             api_key=os.getenv("OPEN_AI_KEY"),
@@ -249,8 +250,17 @@ async def read_root(request: Request):
             }}
         """
         
+
+        redis_history = RedisChatMessageHistory(
+            url=os.getenv("REDIS_URI"), 
+            session_id="1234",
+            ttl=3600
+        )
+        
+
         memory = ConversationBufferMemory(
             memory_key="chat_history",
+            chat_memory=redis_history, 
             return_messages=True
         )
 
@@ -396,12 +406,13 @@ async def read_root(request: Request):
             agent=agent,
             tools=tools,
             verbose=True,
+            memory=memory,
             handle_parsing_errors=True
         )
         
         response = agent_executor.invoke({
             "input": query,
-            "chat_history": messages
+            # "chat_history": messages
         })
         
         return Response(content=response["output"])
