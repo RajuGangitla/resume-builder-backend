@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, Response, HTTPException
 from langchain_openai import AzureChatOpenAI
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain.tools import tool
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import RedisChatMessageHistory
@@ -14,10 +14,12 @@ from pydantic import BaseModel, Field
 import tempfile
 import subprocess
 from pathlib import Path
-
+from tools.latex_converter import LaTeXResumeConverter
+from typing import List, Optional
 
 load_dotenv()
 app=FastAPI()
+
 
 os.environ["OPEN_AI_KEY"] = os.getenv("OPEN_AI_KEY")
 os.environ["OPENAI_API_VERSION"] = os.getenv("OPENAI_API_VERSION")
@@ -36,170 +38,47 @@ app.add_middleware(
 )
 
 
-# LaTeX helper functions
-def safe_get(data: dict, *keys, default="") -> str:
-    """Safely get nested dictionary values, returning default if not found"""
-    current = data
-    for key in keys:
-        if not isinstance(current, dict):
-            return default
-        current = current.get(key, default)
-    return current if current is not None else default
-
-def escape_latex(text: str) -> str:
-    """Escape special LaTeX characters"""
-    chars = {
-        '&': '\\&',
-        '%': '\\%',
-        '$': '\\$',
-        '#': '\\#',
-        '_': '\\_',
-        '{': '\\{',
-        '}': '\\}',
-        '~': '\\textasciitilde{}',
-        '^': '\\textasciicircum{}',
-        '\\': '\\textbackslash{}'
-    }
-    return ''.join(chars.get(c, c) for c in str(text))
-
-def format_text_with_bullets(text: str) -> str:
-    """Format text into LaTeX bullet points"""
-    if not text:
-        return ""
-    lines = text.split('\n') if '\n' in text else [text]
-    formatted_lines = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        line = line.lstrip('•-*').strip()
-        formatted_lines.append(f"    \\item {escape_latex(line)}")
-    return '\n'.join(formatted_lines)
-
 class PersonalInfo(BaseModel):
     name: str = Field(..., description="Full name of the person")
     email: str = Field(..., description="Email address")
     phone: str = Field(..., description="Phone number")
-    location: str = Field(..., description="Current location")
+    github: str = Field(..., description="GitHub profile link")
+    linkedin: str = Field(..., description="LinkedIn profile link")
 
 class Experience(BaseModel):
     company: str = Field(..., description="Company name")
     title: str = Field(..., description="Job title")
-    start_date: str = Field(..., description="Start date of employment")
-    end_date: Optional[str] = Field(default="Present", description="End date of employment")
-    location: Optional[str] = Field(default="", description="Job location")
-    responsibilities: str = Field(..., description="Job responsibilities")
+    start_date: str = Field(..., description="Start date of employment (YYYY-MM)")
+    end_date: Optional[str] = Field(None, description="End date of employment (YYYY-MM), None if still employed")
+    job_type: Optional[str] = Field("Not Specified", description="Job Type (Remote, On-site, Hybrid)")
+    responsibilities: List[str] = Field(..., description="List of job responsibilities")
 
 class Education(BaseModel):
     institution: str = Field(..., description="Educational institution name")
+    location: Optional[str] = Field(None, description="Location of the institution")
     degree: str = Field(..., description="Degree obtained")
-    graduation_date: str = Field(..., description="Graduation date")
+    graduation_date: str = Field(..., description="Graduation date (YYYY-MM)")
+
+class Projects(BaseModel):
+    title: str = Field(..., description="Title of the project")
+    tech_stack: List[str] = Field(..., description="Technologies used in this project")
+    features: List[str] = Field(..., description="List of key features in the project")
+    duration: str = Field(..., description="Duration of the project (e.g., 3 months)")
+
+# Structured Skill Categories
+class Skills(BaseModel):
+    languages: List[str] = Field(..., description="List of programming languages")
+    frameworks: List[str] = Field(..., description="List of frameworks")
+    developer_tools: List[str] = Field(..., description="List of developer tools")
+    libraries: List[str] = Field(..., description="List of libraries")
 
 class Resume(BaseModel):
     personal_info: PersonalInfo
     summary: str = Field(..., description="Professional summary")
     experience: List[Experience]
     education: List[Education]
-    skills: List[str] = Field(..., description="List of skills")
-
-def json_to_latex_resume(json_data: dict) -> str:
-    """Convert JSON resume data to LaTeX maintaining exact template style"""
-    try:
-        latex_content = []
-        
-        # Document setup - exactly as provided
-        latex_content.extend([
-            "\\documentclass{resume}",
-            "\\usepackage[left=0.4 in,top=0.4in,right=0.4 in,bottom=0.4in]{geometry}",
-            "\\newcommand{\\tab}[1]{\\hspace{.2667\\textwidth}\\rlap{#1}}",
-            "\\newcommand{\\itab}[1]{\\hspace{0em}\\rlap{#1}}",
-            ""
-        ])
-        
-        # Personal Information
-        personal = json_data.get('personal_info', {})
-        name = safe_get(personal, 'name')
-        if name:
-            latex_content.append(f"\\name{{{escape_latex(name)}}}")
-        
-        # Split contact info into two address blocks exactly like template
-        phone_location = f"{safe_get(personal, 'phone')} \\\\ {safe_get(personal, 'location')}"
-        email = safe_get(personal, 'email')
-        email_block = f"\\href{{mailto:{email}}}{{{escape_latex(email)}}}"
-        
-        latex_content.extend([
-            f"\\address{{{phone_location}}}",
-            f"\\address{{{email_block}}}",
-            "",
-            "\\begin{document}",
-            ""
-        ])
-        
-        # Summary section formatted as OBJECTIVE
-        if summary := safe_get(json_data, 'summary'):
-            latex_content.extend([
-                "\\begin{rSection}{OBJECTIVE}",
-                escape_latex(summary),
-                "\\end{rSection}",
-                ""
-            ])
-        
-        # Education section with exact formatting
-        if education := json_data.get('education', []):
-            latex_content.append("\\begin{rSection}{Education}")
-            for edu in education:
-                degree = safe_get(edu, 'degree')
-                institution = safe_get(edu, 'institution')
-                grad_date = safe_get(edu, 'graduation_date')
-                latex_content.extend([
-                    f"{{\\bf {escape_latex(degree)}}}, {escape_latex(institution)} \\hfill {{{escape_latex(grad_date)}}}",
-                    ""
-                ])
-            latex_content.extend(["\\end{rSection}", ""])
-        
-        # Skills section with tabular format
-        if skills := json_data.get('skills', []):
-            latex_content.extend([
-                "\\begin{rSection}{SKILLS}",
-                "\\begin{tabular}{ @{} >{{\\bfseries}}l @{\\hspace{6ex}} l }",
-                f"Technical Skills & {', '.join(escape_latex(skill) for skill in skills)}\\\\",
-                "\\end{tabular}\\\\",
-                "\\end{rSection}",
-                ""
-            ])
-        
-        # Experience section with exact spacing and formatting
-        if experience := json_data.get('experience', []):
-            latex_content.append("\\begin{rSection}{EXPERIENCE}")
-            for exp in experience:
-                title = safe_get(exp, 'title')
-                company = safe_get(exp, 'company')
-                start = safe_get(exp, 'start_date')
-                end = safe_get(exp, 'end_date', 'Present')
-                location = safe_get(exp, 'location')
-                
-                latex_content.extend([
-                    f"\\textbf{{{escape_latex(title)}}} \\hfill {escape_latex(start)} - {escape_latex(end)}\\\\",
-                    f"{escape_latex(company)} \\hfill \\textit{{{escape_latex(location)}}}",
-                    "\\begin{itemize}",
-                    "    \\itemsep -3pt {}"
-                ])
-                
-                if responsibilities := safe_get(exp, 'responsibilities'):
-                    latex_content.append(format_text_with_bullets(responsibilities))
-                
-                latex_content.extend([
-                    "\\end{itemize}",
-                    ""
-                ])
-            
-            latex_content.extend(["\\end{rSection}", ""])
-        
-        latex_content.append("\\end{document}")
-        return "\n".join(latex_content)
-    
-    except Exception as e:
-        return f"% Error generating LaTeX: {str(e)}"
+    projects: List[Projects]
+    skills: Skills  # Updated to use structured categories
 
 
 
@@ -215,48 +94,61 @@ async def read_root(request: Request):
         )
 
         system_message = """
-        You are an expert resume builder assistant. Your role is to:
-        1. Collect all required information from the user through a series of questions
-        2. Create a structured JSON resume using the format_resume_json tool
-        3. Convert the resume to LaTeX format using the convert_to_latex tool
-        4. Optimize the content for ATS systems using the optimize_resume_for_ats tool
-        5. Generate a PDF from the LaTeX content using the generate_pdf tool and save it locally
+You are an expert resume builder assistant. Your role is to:
+1. Collect all required information from the user through a series of questions.
+2. When receiving content for "experience" or "projects" (especially responsibilities and features), use the format_responsibilities tool to break down the text into well-structured bullet points.
+3. Optimize the content for ATS systems using the optimize_resume_for_ats tool.
+4. Create a structured JSON resume using the format_resume_json tool.
+5. Convert the resume to LaTeX format using the convert_to_latex tool.
+6. Generate a PDF from the LaTeX content using the generate_pdf tool and save it locally.
 
-        Follow the provided JSON schema and ensure all information is complete before formatting.
-        If any information is missing, ask the user for it before proceeding.
-        
-        The JSON schema should follow this structure:
-         {{
-                "personal_info": {{
-                    "name": "string",
-                    "email": "string",
-                    "phone": "string",
-                    "location": "string"
-                }},
-                "summary": "string",
-                "experience": [{{
-                    "company": "string",
-                    "title": "string",
-                    "start_date": "string",
-                    "end_date": "string",
-                    "responsibilities": "string"
-                }}],
-                "education": [{{
-                    "institution": "string",
-                    "degree": "string",
-                    "graduation_date": "string"
-                }}],
-                "skills": ["string"]
-            }}
-        """
-        
+Follow the provided JSON schema and ensure all information is complete before formatting.
+If any information is missing, ask the user for it before proceeding.
+
+The JSON schema should follow this structure:
+{{
+    "personal_info": {{
+        "name": "string",
+        "email": "string",
+        "phone": "string",
+        "github": "string",
+        "linkedin": "string"
+    }},
+    "summary": "string",
+    "experience": [{{
+        "company": "string",
+        "title": "string",
+        "start_date": "string",
+        "end_date": "string or null",
+        "job_type": "string",
+        "responsibilities": ["string"]  # Use format_responsibilities tool here
+    }}],
+    "education": [{{
+        "institution": "string",
+        "location": "string or null",
+        "degree": "string",
+        "graduation_date": "string"
+    }}],
+    "projects": [{{
+        "title": "string",
+        "tech_stack": ["string"],
+        "features": ["string"],  # Use format_responsibilities tool here
+        "duration": "string"
+    }}],
+    "skills": {{
+        "languages": ["string"],
+        "frameworks": ["string"],
+        "developer_tools": ["string"],
+        "libraries": ["string"]
+    }}
+}}
+"""
 
         redis_history = RedisChatMessageHistory(
             url=os.getenv("REDIS_URI"), 
             session_id="1234",
             ttl=3600
         )
-        
 
         memory = ConversationBufferMemory(
             memory_key="chat_history",
@@ -272,6 +164,45 @@ async def read_root(request: Request):
         ])
 
         @tool
+        def format_responsibilities(text: str) -> List[str]:
+            """Breaks down long text into well-structured, impactful bullet points for better readability."""
+
+            try:
+                format_large_prompt = PromptTemplate.from_template("""
+                Transform the following text into **at least 5 strong, impactful bullet points** based on these rules:
+                - **Start with powerful action verbs** (e.g., "Developed", "Optimized", "Implemented").
+                - **Include measurable impact** (e.g., "Increased efficiency by 30%").
+                - **Focus on achievements rather than generic tasks**.
+                - **Use present tense for current roles, past tense for previous roles**.
+                - **Keep each bullet concise (10-15 words max)**.
+
+                ### **Example Before & After**
+                
+                **Before (Weak Statement):**  
+                "Managed backend tasks for API development."  
+                
+                **After (Optimized with Metrics & Action Verbs):**  
+                - "Developed and optimized **RESTful APIs** in **NestJS**, reducing response time by **40%**."
+                - "Integrated **Kafka-based event-driven architecture**, improving data consistency across microservices."
+                - "Implemented **GraphQL endpoints**, enhancing frontend query efficiency by **25%**."
+                - "Designed and deployed **secure authentication flows** using **OAuth & JWT**."
+                - "Collaborated with cross-functional teams to deliver features **2 weeks ahead of schedule**."
+
+                **Now, transform the given text into optimized bullet points:**
+                
+                Text to transform:  
+                {text}
+                
+                **Return only the bullet points, one per line, starting with '- '**
+                """)
+
+                result = model.invoke(format_large_prompt.format(text=text))
+                return result.content.split("\n")  # Ensure bullet points are returned as a list
+
+            except Exception as e:
+                return [f"Error breaking into bullet points: {str(e)}"]
+
+        @tool
         def format_resume_json(resume_data: Resume) -> str:
             """Format resume data into a structured JSON. Expects data in the Resume model format."""
             try:
@@ -282,7 +213,13 @@ async def read_root(request: Request):
 
         @tool
         def convert_to_latex(json_str: str) -> str:
-            """Convert JSON resume to LaTeX format"""
+            """Convert JSON resume to LaTeX format.
+                Args:
+                    json_str: JSON string or dict containing resume data
+        
+                Returns:
+                    str: LaTeX formatted resume
+            """
             try:
                 if isinstance(json_str, str):
                     resume_data = json.loads(json_str)
@@ -290,14 +227,53 @@ async def read_root(request: Request):
                     resume_data = json_str
                 # Validate the data using the Resume model
                 resume = Resume(**resume_data)
-                return json_to_latex_resume(resume.model_dump())
+                converter = LaTeXResumeConverter()
+                latex_output = converter.convert_json_to_latex(resume)
+                return latex_output
+            except json.JSONDecodeError as e:
+                return f"Error parsing JSON: {str(e)}"
+            except ValueError as e:
+                return f"Error validating resume data: {str(e)}"
             except Exception as e:
                 return f"Error converting to LaTeX: {str(e)}"
 
         @tool
-        def optimize_resume_for_ats(text: str) -> str:
-            """Optimize resume content for ATS systems"""
-            return text
+        def optimize_resume_for_ats(resume_data: Resume) -> str:
+            """Optimize resume content for ATS systems with a 95%+ score"""
+
+            optimise_resume_template = PromptTemplate.from_template("""
+                You are an **expert in Applicant Tracking Systems (ATS) optimization** and a **resume writing specialist**.
+                Your goal is to transform the given resume to achieve at least a **95% ATS score** by:
+                - **Optimizing phrasing** for clarity and impact
+                - **Adding industry-relevant keywords** based on the job role
+                - **Ensuring readability** with proper bullet points and formatting
+                - **Removing redundant or weak wording**
+                - **Keeping the content concise and impactful**
+                
+                ### **Examples of Improvements:**
+                
+                **Before (Weak Statement):**  
+                - "Worked on backend APIs"  
+                
+                **After (Optimized for ATS):**  
+                - "Designed and developed **scalable RESTful APIs** using **Node.js, NestJS, and MongoDB**, improving response times by **40%**."
+
+                **Before (Generic Description):**  
+                - "Experienced in cloud services"  
+
+                **After (Keyword-Rich & Impactful):**  
+                - "Expert in **AWS (EC2, S3, Lambda)** and **Google Cloud Platform (GCP)**, optimizing cloud infrastructure for **high availability** and **cost efficiency**."
+
+                **Transform the given resume into an optimized version following these best practices:**
+
+                **Original Resume Data:**  
+                {resume_data}
+
+                **Optimized ATS-Ready Resume:**
+            """)
+
+            result = model.invoke(optimise_resume_template.format(resume_data=resume_data))
+            return result.content
 
         @tool
         def generate_pdf(latex_content: str) -> str:
@@ -394,7 +370,7 @@ async def read_root(request: Request):
             except Exception as e:
                 return f"Error generating PDF: {str(e)}"
 
-        tools = [format_resume_json, convert_to_latex, optimize_resume_for_ats, generate_pdf]
+        tools = [format_resume_json, convert_to_latex, optimize_resume_for_ats, generate_pdf, format_responsibilities]
         
         agent = create_tool_calling_agent(
             llm=model,
