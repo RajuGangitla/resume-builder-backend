@@ -49,8 +49,18 @@ class ExperienceTool(BaseTool):
              end_date: Optional[str] = None, job_type: Optional[str] = "Not Specified", 
              responsibilities: Optional[List[str]] = None,
              run_manager: Optional[CallbackManagerForToolRun] = None):
+        print("experience started")
         responsibilities = responsibilities or []
+        print(self.resume.resume_data)
         existing_data = self.resume.resume_data["experience_section"]
+        print({
+            "job_title": job_title or "",
+            "company": company or "",
+            "start_date": start_date or "",
+            "end_date": end_date,
+            "job_type": job_type or "Not Specified",
+            "responsibilities": responsibilities
+        })
         existing_data.append({
             "job_title": job_title or "",
             "company": company or "",
@@ -59,6 +69,7 @@ class ExperienceTool(BaseTool):
             "job_type": job_type or "Not Specified",
             "responsibilities": responsibilities
         })
+        print("experiece ended")
         self.resume.resume_data["experience_section"] = existing_data
         return {"output": "Successfully added experience."}
 
